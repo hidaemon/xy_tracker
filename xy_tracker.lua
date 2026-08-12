@@ -415,6 +415,30 @@ function addon:RollCurrentWishes()
     return self:StartRollTracking()
 end
 
+function addon:IsRollTeamAvailable()
+    return teamChannel() ~= nil
+end
+
+function addon:StopRollWhenSolo()
+    if self:IsRollTeamAvailable() then return false end
+    if self.rollTracking or self.rollCountingDown or #self.rollMessageQueue > 0 then
+        self.rollData = {}
+        self.rollResults = {}
+        self.rollMessageQueue = {}
+        self.rollMessageElapsed = 0
+        self.rollTracking = false
+        self.rollCountingDown = false
+        self.rollCountdown = 0
+        self.rollCountdownElapsed = 0
+        self.rollFinalDelay = 0
+        self.rollFinalText = nil
+        self:UpdateRollPage()
+        self:Print("已离开队伍或团队，本轮 Roll 功能已停止。")
+        return true
+    end
+    return false
+end
+
 function addon:GetRollChatType()
     local selectedID = self.rollChannelID or 2
     if self.UI and self.UI.rollDropdown and UIDropDownMenu_GetSelectedID then
@@ -437,6 +461,7 @@ end
 
 function addon:RollAnnounce(text)
     if not text or text == "" then return false end
+    if not self:IsRollTeamAvailable() then return false end
     if type(sendChatMessage) ~= "function" then
         if not self.chatUnavailableWarned then
             self:Print("当前客户端没有可用的聊天发送 API，Roll 通报已跳过。")
@@ -485,6 +510,10 @@ function addon:UpdateRollPage()
 end
 
 function addon:StartRollTracking()
+    if not self:IsRollTeamAvailable() then
+        self:Print("Roll 功能需要先加入队伍或团队。")
+        return false
+    end
     if self.rollCountingDown then
         self:Print("倒计时通报进行中，请稍候再开始新一轮 Roll。")
         return false
@@ -515,6 +544,10 @@ function addon:ClearRollData()
 end
 
 function addon:StopRollTracking()
+    if not self:IsRollTeamAvailable() then
+        self:Print("Roll 功能需要先加入队伍或团队。")
+        return false
+    end
     if not self.rollTracking or self.rollCountingDown then return false end
     self.rollCountingDown = true
     self.rollCountdown = 6
@@ -559,6 +592,10 @@ function addon:FinishRollTracking()
 end
 
 function addon:UpdateRollCountdown(elapsed)
+    if not self:IsRollTeamAvailable() then
+        self:StopRollWhenSolo()
+        return
+    end
     if self.rollFinalDelay > 0 and #self.rollMessageQueue == 0 then
         self.rollFinalDelay = self.rollFinalDelay - elapsed
         if self.rollFinalDelay <= 0 then
@@ -582,7 +619,7 @@ function addon:UpdateRollCountdown(elapsed)
 end
 
 function addon:ProcessRollSystemMessage(message)
-    if not self.rollTracking then return end
+    if not self.rollTracking or not self:IsRollTeamAvailable() then return end
     local player, roll, minRoll, maxRoll = string.match(message or "", "^(.+)掷出(%d+)（(%d+)-(%d+)）")
     if not player then
         player, roll, minRoll, maxRoll = string.match(message or "", "^(.+)掷出(%d+)%((%d+)%-(%d+)%)")
@@ -1416,6 +1453,7 @@ function addon:Initialize()
             self:ProcessRollSystemMessage(message)
         elseif event == "RAID_ROSTER_UPDATE" or event == "GROUP_ROSTER_UPDATE" or
                event == "PARTY_LEADER_CHANGED" then
+            self:StopRollWhenSolo()
             self:Refresh()
         elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
             self:Refresh()

@@ -789,9 +789,11 @@ end
 function UI:UpdateRollPage()
     if not self.rollPage then return end
     local results = addon.rollResults or {}
+    local teamAvailable = addon:IsRollTeamAvailable()
     self.rollScrollChild:SetHeight(math.max(#results, 1) * ROW_HEIGHT)
-    self.rollStartButton:SetEnabled(not addon.rollTracking and not addon.rollCountingDown)
-    self.rollStopButton:SetEnabled(addon.rollTracking and not addon.rollCountingDown)
+    self.rollStartButton:SetEnabled(teamAvailable and not addon.rollTracking and not addon.rollCountingDown)
+    self.rollStopButton:SetEnabled(teamAvailable and addon.rollTracking and not addon.rollCountingDown)
+    self.rollRepeatCheck:SetEnabled(teamAvailable)
     local maxRoll = 0
     local maxPlayers = {}
     local i
