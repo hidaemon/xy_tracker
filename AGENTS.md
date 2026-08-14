@@ -22,3 +22,8 @@
 - 旧版新协议的 `BEGIN → REC → END` 与 `PART/LS*` 自定义分片不再作为当前新协议发送格式；老客户端仅通过隔离的 `xy_legacy.lua` 兼容老协议。
 - `Libs/LibStub`、`CallbackHandler-1.0`、`ChatThrottleLib`、`LibSerialize`、`LibDeflate`、`AceComm-3.0` 和 `Chomp` 必须在主文件前加载。
 - `xy_snapshot.lua` 只负责第三方库编排和数据校验；`xy_tracker.lua` 只保留协议路由和模块调用，避免通讯实现再次耦合。
+
+## 安全执行与小退流程规则（重要）
+- 不得向暴雪全局 `StaticPopupDialogs` 表写入插件自定义对话框；该表会被游戏菜单的小退/退出流程共享，写入后可能导致 `ADDON_ACTION_FORBIDDEN` 和 `callback()` 保护错误。需要确认或输入时，使用插件自己的普通 `Frame` 弹窗。
+- `PLAYER_LOGOUT` 只允许设置本地持久化标记和停止插件内部队列；必须停止 `OnUpdate`、Roll 通报、AceComm/Chomp 待发消息和交易处理，不得在该事件中调用聊天、插件通讯或其他可能受保护的 API。
+- 不得通过修改暴雪游戏菜单、`StaticPopup` 或其他安全框架的脚本来实现小退提示；小退提示必须与游戏菜单隔离，并且所有弹出窗口都使用插件命名空间。

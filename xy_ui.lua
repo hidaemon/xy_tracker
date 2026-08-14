@@ -20,7 +20,6 @@ local HISTORY_LEFT_WIDTH = 200
 local HISTORY_RIGHT_OFFSET = 220
 local RESET_HISTORY_ROW_COUNT = 100
 local HISTORY_ROW_WIDTH = HISTORY_FRAME_WIDTH - HISTORY_RIGHT_OFFSET - 60
-local HISTORY_DELETE_POPUP = "XYTRACK_DELETE_RESET_HISTORY"
 
 local function makePanel(name, parent, width, height)
     local frame = CreateFrame("Frame", name, parent, "BackdropTemplate")
@@ -692,26 +691,6 @@ function UI:CreateHistoryPage(parent)
     delete:SetScript("OnClick", function() self:DeleteSelectedResetHistory() end)
     self.historyDeleteButton = delete
 
-    StaticPopupDialogs = StaticPopupDialogs or {}
-    if not StaticPopupDialogs[HISTORY_DELETE_POPUP] then
-        StaticPopupDialogs[HISTORY_DELETE_POPUP] = {
-            text = "确定删除当前选中的重置许愿记录吗？此操作不可恢复。",
-            button1 = "删除",
-            button2 = "取消",
-            OnAccept = function()
-                local index = UI.historyPendingDeleteIndex
-                UI.historyPendingDeleteIndex = nil
-                addon:DeleteResetHistory(index)
-            end,
-            OnCancel = function()
-                UI.historyPendingDeleteIndex = nil
-            end,
-            timeout = 0,
-            whileDead = true,
-            hideOnEscape = true,
-        }
-    end
-
     local resetScroll = CreateFrame("ScrollFrame", "XyResetHistoryScrollFrame", page, "UIPanelScrollFrameTemplate")
     resetScroll:SetPoint("TOPLEFT", page, "TOPLEFT", 8, -66)
     resetScroll:SetPoint("BOTTOMRIGHT", page, "BOTTOMLEFT", 8 + HISTORY_LEFT_WIDTH, 34)
@@ -863,9 +842,8 @@ function UI:DeleteSelectedResetHistory()
         addon:Print("请先选择要删除的重置日期。")
         return
     end
-    if type(StaticPopup_Show) ~= "function" then return end
     self.historyPendingDeleteIndex = index
-    StaticPopup_Show(HISTORY_DELETE_POPUP)
+    self:ShowHistoryDeleteConfirm()
 end
 
 function UI:UpdateHistoryPage()
@@ -938,7 +916,116 @@ function UI:UpdateHistoryPage()
     if #history == 0 then self.historyEmpty:Show() else self.historyEmpty:Hide() end
 end
 
+function UI:CreateRelogPrompt()
+    if self.relogPromptFrame then return end
+
+    -- 不写入 StaticPopupDialogs。该全局表会被暴雪游戏菜单和安全回调共享，
+    -- 插件写入后可能使小退按钮的 callback() 变成 tainted，从而触发
+    -- ADDON_ACTION_FORBIDDEN。这里使用插件自己的普通 Frame。
+    local frame = makePanel("XyRelogClearPromptFrame", UIParent, 360, 150)
+    frame:SetPoint("CENTER")
+    frame:SetFrameStrata("DIALOG")
+    frame:SetClampedToScreen(true)
+    makeMovable(frame)
+    frame:Hide()
+
+    local title = makeLabel(frame, nil, 300, 24)
+    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -14)
+    title:SetText("退出确认")
+    title:SetTextColor(1, 0.82, 0)
+
+    local message = makeLabel(frame, nil, 320, 42)
+    message:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -46)
+    message:SetText("检测到你刚刚退出过游戏。是否清空本地许愿内容？")
+    message:SetTextColor(1, 1, 1)
+    message:SetJustifyV("TOP")
+
+    local clear = makeButton("XyRelogClearPromptAccept", frame, "清空许愿", 104, 24)
+    clear:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 38, 16)
+    clear:SetScript("OnClick", function()
+        frame:Hide()
+        addon:ClearLocalWishes()
+        addon:Print("本地许愿内容已清空，角色和 DKP 数据已保留。")
+        addon:FinishRelogPrompt()
+    end)
+
+    local keepPrompt = function()
+        frame:Hide()
+        addon:Print("已保留本地许愿数据。")
+        addon:FinishRelogPrompt()
+    end
+    local keep = makeButton("XyRelogClearPromptCancel", frame, "保留数据", 104, 24)
+    keep:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -38, 16)
+    keep:SetScript("OnClick", keepPrompt)
+
+    local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
+    close:SetScript("OnClick", keepPrompt)
+
+    self.relogPromptFrame = frame
+end
+
+function UI:ShowRelogPrompt()
+    if not self.relogPromptFrame then self:CreateRelogPrompt() end
+    if not self.relogPromptFrame then return false end
+    self.relogPromptFrame:Show()
+    return true
+end
+
+function UI:CreateHistoryDeleteConfirm()
+    if self.historyDeleteConfirmFrame then return end
+
+    local frame = makePanel("XyHistoryDeleteConfirmFrame", UIParent, 340, 140)
+    frame:SetPoint("CENTER")
+    frame:SetFrameStrata("DIALOG")
+    frame:SetClampedToScreen(true)
+    makeMovable(frame)
+    frame:Hide()
+
+    local title = makeLabel(frame, nil, 280, 24)
+    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -14)
+    title:SetText("删除历史记录")
+    title:SetTextColor(1, 0.82, 0)
+
+    local message = makeLabel(frame, nil, 300, 36)
+    message:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -46)
+    message:SetText("确定删除当前选中的重置许愿记录吗？此操作不可恢复。")
+    message:SetTextColor(1, 1, 1)
+    message:SetJustifyV("TOP")
+
+    local deleteHistory = function()
+        local index = self.historyPendingDeleteIndex
+        self.historyPendingDeleteIndex = nil
+        frame:Hide()
+        addon:DeleteResetHistory(index)
+    end
+    local delete = makeButton("XyHistoryDeleteConfirmAccept", frame, "删除", 82, 24)
+    delete:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 52, 16)
+    delete:SetScript("OnClick", deleteHistory)
+
+    local cancelHistory = function()
+        self.historyPendingDeleteIndex = nil
+        frame:Hide()
+    end
+    local cancel = makeButton("XyHistoryDeleteConfirmCancel", frame, "取消", 82, 24)
+    cancel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -52, 16)
+    cancel:SetScript("OnClick", cancelHistory)
+
+    local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
+    close:SetScript("OnClick", cancelHistory)
+
+    self.historyDeleteConfirmFrame = frame
+end
+
+function UI:ShowHistoryDeleteConfirm()
+    if not self.historyDeleteConfirmFrame then self:CreateHistoryDeleteConfirm() end
+    if self.historyDeleteConfirmFrame then self.historyDeleteConfirmFrame:Show() end
+end
+
 function UI:CreatePopups()
+    self:CreateRelogPrompt()
+    self:CreateHistoryDeleteConfirm()
     self:CreateDKPPopup("add", "XyAddDkpFrame", "增加 DKP")
     self:CreateDKPPopup("minus", "XyMinusDkpFrame", "扣除 DKP")
 

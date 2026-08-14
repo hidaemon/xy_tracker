@@ -64,6 +64,7 @@ addon.protocolNegotiating = false
 addon.protocolNewSeen = false
 addon.protocolElapsed = 0
 addon.lastRemoteResetToken = nil
+addon.isLoggingOut = false
 
 local function trim(value)
     if value == nil then return "" end
@@ -496,6 +497,7 @@ function addon:GetRollChatType()
 end
 
 function addon:RollAnnounce(text)
+    if self.isLoggingOut then return false end
     if not text or text == "" then return false end
     if not self:IsRollTeamAvailable() then return false end
     if type(sendChatMessage) ~= "function" then
@@ -514,7 +516,7 @@ function addon:RollAnnounce(text)
 end
 
 function addon:QueueRollAnnounce(text)
-    if text and text ~= "" then
+    if not self.isLoggingOut and text and text ~= "" then
         table.insert(self.rollMessageQueue, text)
     end
 end
@@ -853,29 +855,9 @@ function addon:ClearLocalWishes()
     self.records = XyArray
 end
 
-local RELOG_CLEAR_POPUP = "XYTRACK_RELOG_CLEAR"
-
 function addon:InitializeRelogPrompt()
-    StaticPopupDialogs = StaticPopupDialogs or {}
-    if StaticPopupDialogs[RELOG_CLEAR_POPUP] then return end
-
-    StaticPopupDialogs[RELOG_CLEAR_POPUP] = {
-        text = "检测到你刚刚退出过游戏。是否清空本地许愿内容？",
-        button1 = "清空许愿",
-        button2 = "保留数据",
-        OnAccept = function()
-            addon:ClearLocalWishes()
-            addon:Print("本地许愿内容已清空，角色和 DKP 数据已保留。")
-            addon:FinishRelogPrompt()
-        end,
-        OnCancel = function()
-            addon:Print("已保留本地许愿数据。")
-            addon:FinishRelogPrompt()
-        end,
-        timeout = 0,
-        whileDead = true,
-        hideOnEscape = true,
-    }
+    -- 确认窗口由 xy_ui.lua 创建为插件自己的普通 Frame。
+    -- 不使用 StaticPopupDialogs，避免污染暴雪游戏菜单的小退回调。
 end
 
 function addon:PromptRelogClear(isReload)
@@ -884,11 +866,10 @@ function addon:PromptRelogClear(isReload)
         XyRelogClearPrompt = 0
         return false
     end
-    if type(StaticPopup_Show) ~= "function" then return false end
-
     XyRelogClearPrompt = 0
+    if not self.UI or type(self.UI.ShowRelogPrompt) ~= "function" then return false end
+    if not self.UI:ShowRelogPrompt() then return false end
     self.relogPromptPending = true
-    StaticPopup_Show(RELOG_CLEAR_POPUP)
     return true
 end
 
@@ -951,6 +932,7 @@ function addon:UpdateProtocolNegotiation(elapsed)
 end
 
 function addon:QueueAddonMessage(prefix, message, channel, target)
+    if self.isLoggingOut then return false end
     if not message then
         return false
     end
@@ -1025,6 +1007,7 @@ function addon:BroadcastRecord(record)
 end
 
 function addon:ProcessPacket(message, sender)
+    if self.isLoggingOut then return end
     local fields = splitPacket(message or "")
     local command = fields[1]
     if command == "CAPS_REQ" then
@@ -1132,6 +1115,7 @@ function addon:ProcessPacket(message, sender)
 end
 
 function addon:RequestSnapshot()
+    if self.isLoggingOut then return false end
     if self.protocolMode == "legacy" and self.Legacy then
         return self.Legacy:RequestSnapshot()
     end
@@ -1142,6 +1126,7 @@ function addon:RequestSnapshot()
 end
 
 function addon:SendTeam(message)
+    if self.isLoggingOut then return false end
     if type(sendChatMessage) ~= "function" then return false end
     local channel = teamChannel()
     if not channel then
@@ -1473,6 +1458,7 @@ function addon:OnExportButtonClick() if self.UI then return self.UI:ShowExport()
 function addon:OnAboutButtonClick() if self.UI then return self.UI:ToggleAbout() end end
 
 function addon:OnUpdate(elapsed)
+    if self.isLoggingOut then return end
     self.txElapsed = self.txElapsed + elapsed
     if self.txElapsed >= QUEUE_DELAY and #self.txQueue > 0 then
         self.txElapsed = 0
@@ -1484,6 +1470,26 @@ function addon:OnUpdate(elapsed)
     self:UpdateProtocolNegotiation(elapsed)
     self:ProcessRollMessageQueue(elapsed)
     self:UpdateRollCountdown(elapsed)
+end
+
+function addon:BeginLogout()
+    if self.isLoggingOut then return end
+    self.isLoggingOut = true
+    XyRelogClearPrompt = 1
+
+    -- 取消插件自己的待发消息和 Roll 通报，避免退出过程中继续调用受保护 API。
+    self.txQueue = {}
+    self.rollMessageQueue = {}
+    self.rollTracking = false
+    self.rollCountingDown = false
+    self.rollFinalDelay = 0
+    self.rollFinalText = nil
+    self.protocolNegotiating = false
+    self.receivingSession = nil
+
+    if self.eventFrame then
+        self.eventFrame:SetScript("OnUpdate", nil)
+    end
 end
 
 function addon:Initialize()
@@ -1522,7 +1528,11 @@ function addon:Initialize()
     registerEventSafe(eventFrame, "CHAT_MSG_ADDON")
     eventFrame:SetScript("OnUpdate", function(_, elapsed) self:OnUpdate(elapsed) end)
     eventFrame:SetScript("OnEvent", function(_, event, ...)
-        if event == "CHAT_MSG_ADDON" then
+        if event == "PLAYER_LOGOUT" then
+            self:BeginLogout()
+        elseif self.isLoggingOut then
+            return
+        elseif event == "CHAT_MSG_ADDON" then
             local prefix, message, channel, sender = ...
             if self.Legacy and self.Legacy:IsPrefix(prefix) then
                 self.Legacy:Process(prefix, message, sender)
@@ -1538,8 +1548,6 @@ function addon:Initialize()
                event == "PARTY_LEADER_CHANGED" then
             self:StopRollWhenSolo()
             self:Refresh()
-        elseif event == "PLAYER_LOGOUT" then
-            XyRelogClearPrompt = 1
         elseif event == "PLAYER_LOGIN" then
             if self.relogPromptPending then return end
             if tonumber(XyRelogClearPrompt) == 1 then return end

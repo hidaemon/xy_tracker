@@ -122,6 +122,10 @@ local function saveDkpTrade(action)
 end
 
 local function commitAction()
+    if addon.isLoggingOut then
+        pendingAction = nil
+        return
+    end
     local action = pendingAction
     pendingAction = nil
     if not action or not action.accepted then return end
@@ -147,6 +151,7 @@ local function commitAction()
 end
 
 local function whisper(message, target)
+    if addon.isLoggingOut then return end
     if target and target ~= "" then SendChatMessage(message, "WHISPER", nil, target) end
 end
 
@@ -264,6 +269,7 @@ local function hideButtons()
 end
 
 local function sendTradeSummary()
+    if addon.isLoggingOut then return end
     local name = targetName()
     if name == "" then return end
     local items = {}
@@ -300,6 +306,7 @@ function Trade:Initialize()
     registerEventSafe(tradeFrame, "GROUP_ROSTER_UPDATE")
     registerEventSafe(tradeFrame, "PARTY_LEADER_CHANGED")
     tradeFrame:SetScript("OnEvent", function(_, event, ...)
+        if addon.isLoggingOut then return end
         if event == "TRADE_SHOW" then
             pendingAction = nil
             selectedAmount = nil
