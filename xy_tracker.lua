@@ -239,6 +239,16 @@ function addon:NormalizeDatabase()
     DefaultDKP = numeric(DefaultDKP, 4)
     XyOnlyMode = numeric(XyOnlyMode, 1)
     XyRelogClearPrompt = numeric(XyRelogClearPrompt, 0)
+    -- XyRelogPromptShown 只在本次客户端会话内防止重复提示。
+    -- GetTime() 从客户端启动开始计时；如果本次值小于上次保存值，
+    -- 说明是完全重启客户端，需要开启新一轮提示。
+    local sessionNow = type(GetTime) == "function" and GetTime() or 0
+    local previousSession = tonumber(XyRelogPromptSession)
+    if not previousSession or (sessionNow > 0 and sessionNow + 2 < previousSession) then
+        XyRelogPromptShown = 0
+    end
+    XyRelogPromptSession = sessionNow
+    XyRelogPromptShown = numeric(XyRelogPromptShown, 0)
     self.rollRepeat = XyRollSettings.repeatRoll == 1
     self.rollChannelID = numeric(XyRollSettings.channelID, 2)
     self.protocolMode = "new"
@@ -862,18 +872,25 @@ end
 
 function addon:PromptRelogClear(isReload)
     if tonumber(XyRelogClearPrompt) ~= 1 then return false end
+    if tonumber(XyRelogPromptShown) == 1 then
+        XyRelogClearPrompt = 0
+        return false
+    end
     if isReload then
         XyRelogClearPrompt = 0
         return false
     end
-    XyRelogClearPrompt = 0
     if not self.UI or type(self.UI.ShowRelogPrompt) ~= "function" then return false end
     if not self.UI:ShowRelogPrompt() then return false end
+    XyRelogClearPrompt = 0
+    XyRelogPromptShown = 1
     self.relogPromptPending = true
     return true
 end
 
 function addon:FinishRelogPrompt()
+    XyRelogClearPrompt = 0
+    XyRelogPromptShown = 1
     self.relogPromptPending = false
     self:Refresh()
     self:BeginProtocolNegotiation()
@@ -1475,7 +1492,13 @@ end
 function addon:BeginLogout()
     if self.isLoggingOut then return end
     self.isLoggingOut = true
-    XyRelogClearPrompt = 1
+    -- 同一客户端会话只安排一次提示；切换人物时 PLAYER_LOGOUT 也会触发，
+    -- 不能无条件再次写入 1，否则每个角色都会重复弹窗。
+    if tonumber(XyRelogPromptShown) ~= 1 then
+        XyRelogClearPrompt = 1
+    else
+        XyRelogClearPrompt = 0
+    end
 
     -- 取消插件自己的待发消息和 Roll 通报，避免退出过程中继续调用受保护 API。
     self.txQueue = {}
