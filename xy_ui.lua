@@ -20,6 +20,7 @@ local HISTORY_LEFT_WIDTH = 200
 local HISTORY_RIGHT_OFFSET = 220
 local RESET_HISTORY_ROW_COUNT = 100
 local HISTORY_ROW_WIDTH = HISTORY_FRAME_WIDTH - HISTORY_RIGHT_OFFSET - 60
+local HISTORY_DELETE_POPUP = "XYTRACK_DELETE_RESET_HISTORY"
 
 local function makePanel(name, parent, width, height)
     local frame = CreateFrame("Frame", name, parent, "BackdropTemplate")
@@ -686,6 +687,31 @@ function UI:CreateHistoryPage(parent)
     resetTitle:SetText("重置日期")
     resetTitle:SetTextColor(1, 1, 1)
 
+    local delete = makeButton("XyHistoryDeleteButton", page, "删除记录", 64, 20)
+    delete:SetPoint("TOPLEFT", page, "TOPLEFT", HISTORY_LEFT_WIDTH - 68, -42)
+    delete:SetScript("OnClick", function() self:DeleteSelectedResetHistory() end)
+    self.historyDeleteButton = delete
+
+    StaticPopupDialogs = StaticPopupDialogs or {}
+    if not StaticPopupDialogs[HISTORY_DELETE_POPUP] then
+        StaticPopupDialogs[HISTORY_DELETE_POPUP] = {
+            text = "确定删除当前选中的重置许愿记录吗？此操作不可恢复。",
+            button1 = "删除",
+            button2 = "取消",
+            OnAccept = function()
+                local index = UI.historyPendingDeleteIndex
+                UI.historyPendingDeleteIndex = nil
+                addon:DeleteResetHistory(index)
+            end,
+            OnCancel = function()
+                UI.historyPendingDeleteIndex = nil
+            end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+        }
+    end
+
     local resetScroll = CreateFrame("ScrollFrame", "XyResetHistoryScrollFrame", page, "UIPanelScrollFrameTemplate")
     resetScroll:SetPoint("TOPLEFT", page, "TOPLEFT", 8, -66)
     resetScroll:SetPoint("BOTTOMRIGHT", page, "BOTTOMLEFT", 8 + HISTORY_LEFT_WIDTH, 34)
@@ -831,6 +857,17 @@ function UI:SelectResetHistory(index)
     self:UpdateHistoryPage()
 end
 
+function UI:DeleteSelectedResetHistory()
+    local index = self.historySelectedIndex
+    if not index or not XyResetHistory or not XyResetHistory[index] then
+        addon:Print("请先选择要删除的重置日期。")
+        return
+    end
+    if type(StaticPopup_Show) ~= "function" then return end
+    self.historyPendingDeleteIndex = index
+    StaticPopup_Show(HISTORY_DELETE_POPUP)
+end
+
 function UI:UpdateHistoryPage()
     if not self.historyPage then return end
     local resetHistory = XyResetHistory or {}
@@ -842,6 +879,11 @@ function UI:UpdateHistoryPage()
         end
     else
         self.historySelectedIndex = nil
+    end
+
+    if self.historyDeleteButton then
+        self.historyDeleteButton:SetEnabled(self.historySelectedIndex ~= nil and
+            resetHistory[self.historySelectedIndex] ~= nil)
     end
 
     self.resetHistoryScrollChild:SetHeight(math.max(#resetHistory, 1) * ROW_HEIGHT)

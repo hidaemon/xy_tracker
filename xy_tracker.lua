@@ -237,6 +237,7 @@ function addon:NormalizeDatabase()
     XyMinimapAngle = numeric(XyMinimapAngle, 0)
     DefaultDKP = numeric(DefaultDKP, 4)
     XyOnlyMode = numeric(XyOnlyMode, 1)
+    XyRelogClearPrompt = numeric(XyRelogClearPrompt, 0)
     self.rollRepeat = XyRollSettings.repeatRoll == 1
     self.rollChannelID = numeric(XyRollSettings.channelID, 2)
     self.protocolMode = "new"
@@ -289,6 +290,10 @@ function addon:NormalizeDatabase()
             end
         end
         snapshot.time = trim(snapshot.time)
+        local month, day, hour = string.match(snapshot.time, "^(%d%d?)-(%d%d?) (%d%d?)$")
+        if month and day and hour then
+            snapshot.time = string.format("%02d-%02d %02d:00", tonumber(month), tonumber(day), tonumber(hour))
+        end
         if snapshot.time ~= "" then
             snapshot.records = records
             snapshot.wishes = nil
@@ -379,7 +384,7 @@ end
 function addon:SaveResetSnapshot()
     XyResetHistory = XyResetHistory or {}
     local snapshot = {
-        time = date("%m-%d %H"),
+        time = date("%m-%d %H:%M"),
         records = {},
     }
     local i
@@ -409,6 +414,37 @@ function addon:ClearWishHistory()
     if self.UI then self.UI.historySelectedIndex = nil end
     if self.UI then self.UI:Update() end
     self:Print("历史许愿和重置记录已清空")
+end
+
+function addon:DeleteResetHistory(index)
+    index = tonumber(index)
+    if not index or not XyResetHistory or not XyResetHistory[index] then
+        return false
+    end
+
+    local deleted = XyResetHistory[index]
+    local deletedTime = deleted.time or ""
+    table.remove(XyResetHistory, index)
+
+    if self.UI then
+        local selected = self.UI.historySelectedIndex
+        if #XyResetHistory == 0 then
+            selected = nil
+        elseif selected == index then
+            if index > #XyResetHistory then
+                selected = #XyResetHistory
+            else
+                selected = index
+            end
+        elseif selected and selected > index then
+            selected = selected - 1
+        end
+        self.UI.historySelectedIndex = selected
+        self.UI:Update()
+    end
+
+    self:Print("已删除重置记录" .. (deletedTime ~= "" and ("：" .. deletedTime) or ""))
+    return true
 end
 
 function addon:RollCurrentWishes()
@@ -815,6 +851,51 @@ function addon:ClearLocalWishes()
         XyArray[i] = record
     end
     self.records = XyArray
+end
+
+local RELOG_CLEAR_POPUP = "XYTRACK_RELOG_CLEAR"
+
+function addon:InitializeRelogPrompt()
+    StaticPopupDialogs = StaticPopupDialogs or {}
+    if StaticPopupDialogs[RELOG_CLEAR_POPUP] then return end
+
+    StaticPopupDialogs[RELOG_CLEAR_POPUP] = {
+        text = "检测到你刚刚退出过游戏。是否清空本地许愿内容？",
+        button1 = "清空许愿",
+        button2 = "保留数据",
+        OnAccept = function()
+            addon:ClearLocalWishes()
+            addon:Print("本地许愿内容已清空，角色和 DKP 数据已保留。")
+            addon:FinishRelogPrompt()
+        end,
+        OnCancel = function()
+            addon:Print("已保留本地许愿数据。")
+            addon:FinishRelogPrompt()
+        end,
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+    }
+end
+
+function addon:PromptRelogClear(isReload)
+    if tonumber(XyRelogClearPrompt) ~= 1 then return false end
+    if isReload then
+        XyRelogClearPrompt = 0
+        return false
+    end
+    if type(StaticPopup_Show) ~= "function" then return false end
+
+    XyRelogClearPrompt = 0
+    self.relogPromptPending = true
+    StaticPopup_Show(RELOG_CLEAR_POPUP)
+    return true
+end
+
+function addon:FinishRelogPrompt()
+    self.relogPromptPending = false
+    self:Refresh()
+    self:BeginProtocolNegotiation()
 end
 
 function addon:SetProtocolMode(mode)
@@ -1409,6 +1490,7 @@ function addon:Initialize()
     if self.isInitialized then return end
     self.isInitialized = true
     self:NormalizeDatabase()
+    self:InitializeRelogPrompt()
     if type(registerAddonMessagePrefix) ~= "function" then
         self:Print("当前客户端没有可用的插件通讯注册 API，通讯功能已停用。")
     else
@@ -1428,6 +1510,7 @@ function addon:Initialize()
     self.eventFrame = eventFrame
     registerEventSafe(eventFrame, "PLAYER_LOGIN")
     registerEventSafe(eventFrame, "PLAYER_ENTERING_WORLD")
+    registerEventSafe(eventFrame, "PLAYER_LOGOUT")
     registerEventSafe(eventFrame, "RAID_ROSTER_UPDATE")
     registerEventSafe(eventFrame, "GROUP_ROSTER_UPDATE")
     registerEventSafe(eventFrame, "PARTY_LEADER_CHANGED")
@@ -1455,7 +1538,17 @@ function addon:Initialize()
                event == "PARTY_LEADER_CHANGED" then
             self:StopRollWhenSolo()
             self:Refresh()
-        elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
+        elseif event == "PLAYER_LOGOUT" then
+            XyRelogClearPrompt = 1
+        elseif event == "PLAYER_LOGIN" then
+            if self.relogPromptPending then return end
+            if tonumber(XyRelogClearPrompt) == 1 then return end
+            self:Refresh()
+            self:BeginProtocolNegotiation()
+        elseif event == "PLAYER_ENTERING_WORLD" then
+            local _, isReload = ...
+            if self:PromptRelogClear(isReload) then return end
+            if self.relogPromptPending then return end
             self:Refresh()
             self:BeginProtocolNegotiation()
         end

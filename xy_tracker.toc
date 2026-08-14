@@ -4,7 +4,7 @@
 ## Notes-zhCN: 支持许愿记录、DKP 管理、同步、物品查询和交易扣分
 ## Author: 达蒙、无道暴君、老胡 / 重构版
 ## Version: 4.0.1
-## SavedVariables: XyArray, DefaultDKP, XyOnlyMode, XyWishHistory, XyResetHistory, XyRollSettings, XyForceNewProtocol, XyMinimapAngle, XyTradeHistory
+## SavedVariables: XyArray, DefaultDKP, XyOnlyMode, XyWishHistory, XyResetHistory, XyRollSettings, XyForceNewProtocol, XyMinimapAngle, XyTradeHistory, XyRelogClearPrompt
 
 Libs/LibStub/LibStub.lua
 Libs/CallbackHandler-1.0/CallbackHandler-1.0.lua
