@@ -239,6 +239,7 @@ function addon:NormalizeDatabase()
     DefaultDKP = numeric(DefaultDKP, 4)
     XyOnlyMode = numeric(XyOnlyMode, 1)
     XyRelogClearPrompt = numeric(XyRelogClearPrompt, 0)
+    XyRelogPreserveWishes = numeric(XyRelogPreserveWishes, 0)
     -- XyRelogPromptShown 只在本次客户端会话内防止重复提示。
     -- GetTime() 从客户端启动开始计时；如果本次值小于上次保存值，
     -- 说明是完全重启客户端，需要开启新一轮提示。
@@ -878,6 +879,7 @@ function addon:PromptRelogClear(isReload)
     end
     if isReload then
         XyRelogClearPrompt = 0
+        XyRelogPreserveWishes = 0
         return false
     end
     if not self.UI or type(self.UI.ShowRelogPrompt) ~= "function" then return false end
@@ -1414,7 +1416,17 @@ end
 function addon:Refresh()
     local inTeam = teamChannel() ~= nil
     local joinedTeam = inTeam and not self.wasInTeam
-    if joinedTeam then self:ClearLocalWishes() end
+    if joinedTeam then
+        if tonumber(XyRelogPreserveWishes) == 1 then
+            -- 重新登录后团队状态可能晚于插件初始化，不能把旧团队误判为新加入。
+            XyRelogPreserveWishes = 0
+        else
+            self:ClearLocalWishes()
+        end
+    elseif inTeam and tonumber(XyRelogPreserveWishes) == 1 then
+        -- 如果初始化时已经能读到团队，也在第一次刷新时消费重登保护标记。
+        XyRelogPreserveWishes = 0
+    end
     self.wasInTeam = inTeam
     local changed = self:RefreshRoster(true)
     if self:IsOperator() and (changed or joinedTeam) then self:SendSnapshot() end
@@ -1492,6 +1504,9 @@ end
 function addon:BeginLogout()
     if self.isLoggingOut then return end
     self.isLoggingOut = true
+    -- 小退/切换人物不清空许愿列表。该标记只用于避免重登时把旧团队
+    -- 误判为“刚加入团队”而触发 ClearLocalWishes()。
+    XyRelogPreserveWishes = 1
     -- 同一客户端会话只安排一次提示；切换人物时 PLAYER_LOGOUT 也会触发，
     -- 不能无条件再次写入 1，否则每个角色都会重复弹窗。
     if tonumber(XyRelogPromptShown) ~= 1 then
