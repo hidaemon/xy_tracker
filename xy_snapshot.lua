@@ -132,6 +132,7 @@ function Snapshot:ReceiveEncoded(data, sender)
     XyInProgress = running
     XyArray = records
     addon.records = XyArray
+    if addon.CompleteRelogRecovery then addon:CompleteRelogRecovery() end
     if addon.UI then addon.UI:Update() end
     return true
 end

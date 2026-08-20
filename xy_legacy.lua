@@ -111,19 +111,8 @@ function Legacy:ApplyInitDKP(message, sender)
 end
 
 function Legacy:ApplyReset(message, sender)
-    if not addon:IsAuthoritySender(sender) then return end
-    addon:SaveResetSnapshot()
-    DefaultDKP = tonumber(message) or DefaultDKP
-    if addon.RefreshRoster then addon:RefreshRoster(false) end
-    local i
-    for i = 1, #XyArray do
-        XyArray[i].dkp = DefaultDKP
-        XyArray[i].xy = addon.unwished
-        XyArray[i].finish = 0
-    end
-    addon.running = false
-    XyInProgress = false
-    if addon.UI then addon.UI:Update() end
+    -- 老协议保持隔离，但权限判断统一交给主模块，避免团员本地误重置。
+    addon:ApplyRemoteReset(tonumber(message) or DefaultDKP, sender, nil)
 end
 
 function Legacy:Process(prefix, message, sender)

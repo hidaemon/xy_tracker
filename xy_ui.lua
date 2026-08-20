@@ -279,7 +279,7 @@ function UI:CreateControlButtons(parent)
 
     local refresh = makeButton("XyTrackerFrameRefresh", parent, "刷新", 59, 17)
     refresh:SetPoint("TOP", parent, "TOP", 0, -38)
-    refresh:SetScript("OnClick", function() addon:Refresh() end)
+    refresh:SetScript("OnClick", function() addon:RefreshFromAuthority() end)
     self.controlButtons.Refresh = refresh
     self:RegisterWishElement(refresh)
 
@@ -733,7 +733,7 @@ function UI:CreateHistoryPage(parent)
 
     local headers = {
         {"角色名", 100, 17}, {"职业", 70, 122},
-        {"许愿内容", 180, 197}, {"状态", 60, 382},
+        {"许愿内容", 130, 197}, {"DKP", 40, 332}, {"状态", 60, 377},
     }
     for i = 1, #headers do
         local label = makeLabel(page, nil, headers[i][2], 24)
@@ -766,19 +766,24 @@ function UI:CreateHistoryPage(parent)
         name:SetPoint("LEFT", row, "LEFT", 4, 0)
         local class = makeLabel(row, nil, 70, 20)
         class:SetPoint("LEFT", name, "RIGHT", 5, 0)
-        local wish = makeLabel(row, nil, 180, 20)
+        local wish = makeLabel(row, nil, 130, 20)
         wish:SetPoint("LEFT", class, "RIGHT", 5, 0)
+        local dkp = makeLabel(row, nil, 40, 20)
+        dkp:SetPoint("LEFT", wish, "RIGHT", 5, 0)
+        dkp:SetJustifyH("CENTER")
         local state = makeLabel(row, nil, 60, 20)
-        state:SetPoint("LEFT", wish, "RIGHT", 5, 0)
+        state:SetPoint("LEFT", dkp, "RIGHT", 5, 0)
         name:SetFont("Fonts\\ARKai_T.ttf", 14, "OUTLINE")
         class:SetFont("Fonts\\ARKai_T.ttf", 14, "OUTLINE")
         wish:SetFont("Fonts\\ARKai_T.ttf", 14, "OUTLINE")
+        dkp:SetFont("Fonts\\ARKai_T.ttf", 14, "OUTLINE")
         state:SetFont("Fonts\\ARKai_T.ttf", 12, "OUTLINE")
         name:SetTextColor(1, 0.82, 0)
         wish:SetTextColor(0.71, 0.28, 0.96)
         row.nameText = name
         row.classText = class
         row.wishText = wish
+        row.dkpText = dkp
         row.stateText = state
         row:Hide()
         self.historyRows[i] = row
@@ -907,6 +912,7 @@ function UI:UpdateHistoryPage()
             local r, g, b = colorFromString(addon:ClassColor(class))
             row.classText:SetTextColor(r, g, b)
             row.wishText:SetText(data.xy or addon.unwished)
+            row.dkpText:SetText(tonumber(data.dkp) or tonumber(DefaultDKP) or 4)
             row.stateText:SetText(data.finish == 1 and "已达成" or "未达成")
             row.stateText:SetTextColor(data.finish == 1 and 0.30 or 0.75, data.finish == 1 and 1 or 0.75, 0.30)
         else
@@ -914,62 +920,6 @@ function UI:UpdateHistoryPage()
         end
     end
     if #history == 0 then self.historyEmpty:Show() else self.historyEmpty:Hide() end
-end
-
-function UI:CreateRelogPrompt()
-    if self.relogPromptFrame then return end
-
-    -- 不写入 StaticPopupDialogs。该全局表会被暴雪游戏菜单和安全回调共享，
-    -- 插件写入后可能使小退按钮的 callback() 变成 tainted，从而触发
-    -- ADDON_ACTION_FORBIDDEN。这里使用插件自己的普通 Frame。
-    local frame = makePanel("XyRelogClearPromptFrame", UIParent, 360, 150)
-    frame:SetPoint("CENTER")
-    frame:SetFrameStrata("DIALOG")
-    frame:SetClampedToScreen(true)
-    makeMovable(frame)
-    frame:Hide()
-
-    local title = makeLabel(frame, nil, 300, 24)
-    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -14)
-    title:SetText("退出确认")
-    title:SetTextColor(1, 0.82, 0)
-
-    local message = makeLabel(frame, nil, 320, 42)
-    message:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -46)
-    message:SetText("检测到你刚刚退出过游戏。是否清空本地许愿内容？")
-    message:SetTextColor(1, 1, 1)
-    message:SetJustifyV("TOP")
-
-    local clear = makeButton("XyRelogClearPromptAccept", frame, "清空许愿", 104, 24)
-    clear:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 38, 16)
-    clear:SetScript("OnClick", function()
-        frame:Hide()
-        addon:ClearLocalWishes()
-        addon:Print("本地许愿内容已清空，角色和 DKP 数据已保留。")
-        addon:FinishRelogPrompt()
-    end)
-
-    local keepPrompt = function()
-        frame:Hide()
-        addon:Print("已保留本地许愿数据。")
-        addon:FinishRelogPrompt()
-    end
-    local keep = makeButton("XyRelogClearPromptCancel", frame, "保留数据", 104, 24)
-    keep:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -38, 16)
-    keep:SetScript("OnClick", keepPrompt)
-
-    local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
-    close:SetScript("OnClick", keepPrompt)
-
-    self.relogPromptFrame = frame
-end
-
-function UI:ShowRelogPrompt()
-    if not self.relogPromptFrame then self:CreateRelogPrompt() end
-    if not self.relogPromptFrame then return false end
-    self.relogPromptFrame:Show()
-    return true
 end
 
 function UI:CreateHistoryDeleteConfirm()
@@ -1024,7 +974,6 @@ function UI:ShowHistoryDeleteConfirm()
 end
 
 function UI:CreatePopups()
-    self:CreateRelogPrompt()
     self:CreateHistoryDeleteConfirm()
     self:CreateDKPPopup("add", "XyAddDkpFrame", "增加 DKP")
     self:CreateDKPPopup("minus", "XyMinusDkpFrame", "扣除 DKP")

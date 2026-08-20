@@ -3,8 +3,8 @@
 ## Notes: TBC 2.5.6 团队许愿、DKP 与交易辅助
 ## Notes-zhCN: 支持许愿记录、DKP 管理、同步、物品查询和交易扣分
 ## Author: 达蒙、无道暴君、老胡 / 重构版
-## Version: 4.0.3
-## SavedVariables: XyArray, DefaultDKP, XyOnlyMode, XyWishHistory, XyResetHistory, XyRollSettings, XyForceNewProtocol, XyMinimapAngle, XyTradeHistory, XyRelogClearPrompt, XyRelogPromptSession, XyRelogPromptShown, XyRelogPreserveWishes
+## Version: 4.0.11
+## SavedVariables: XyArray, DefaultDKP, XyOnlyMode, XyWishHistory, XyResetHistory, XyRollSettings, XyForceNewProtocol, XyMinimapAngle, XyTradeHistory, XyRelogPreserveWishes, XyRelogWishBackup
 
 Libs/LibStub/LibStub.lua
 Libs/CallbackHandler-1.0/CallbackHandler-1.0.lua
