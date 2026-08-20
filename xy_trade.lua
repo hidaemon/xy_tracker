@@ -122,6 +122,10 @@ local function saveDkpTrade(action)
 end
 
 local function commitAction()
+    if addon.isLoggingOut then
+        pendingAction = nil
+        return
+    end
     local action = pendingAction
     pendingAction = nil
     if not action or not action.accepted then return end
@@ -132,21 +136,23 @@ local function commitAction()
     local record = addon:FindRecord(action.player)
     if not record then return end
 
-    local success = true
+    local dkpSuccess = true
     if action.amount and action.amount > 0 then
-        success = addon:MinusDKP(record.name, action.amount, true)
-        if success then
+        dkpSuccess = addon:MinusDKP(record.name, action.amount, true)
+        if dkpSuccess then
             saveDkpTrade(action)
             addon:NotifyTradeDKP(record.name, action.amount, record, action.items)
         end
     end
-    if success and action.finish then
+    -- 许愿达成与扣分是独立选择；扣分不足时仍可记录已达成。
+    if action.finish then
         addon:MarkFinished(record.name, 1)
     end
     updateInfo()
 end
 
 local function whisper(message, target)
+    if addon.isLoggingOut then return end
     if target and target ~= "" then SendChatMessage(message, "WHISPER", nil, target) end
 end
 
@@ -237,6 +243,7 @@ local function createButtons()
                 return
             end
             if config.action == "minus" then
+                if not addon:CanDeductDKP(record.name, config.amount, record) then return end
                 selectedAmount = config.amount
             elseif config.action == "finish" then
                 selectedFinish = not selectedFinish
@@ -264,6 +271,7 @@ local function hideButtons()
 end
 
 local function sendTradeSummary()
+    if addon.isLoggingOut then return end
     local name = targetName()
     if name == "" then return end
     local items = {}
@@ -300,6 +308,7 @@ function Trade:Initialize()
     registerEventSafe(tradeFrame, "GROUP_ROSTER_UPDATE")
     registerEventSafe(tradeFrame, "PARTY_LEADER_CHANGED")
     tradeFrame:SetScript("OnEvent", function(_, event, ...)
+        if addon.isLoggingOut then return end
         if event == "TRADE_SHOW" then
             pendingAction = nil
             selectedAmount = nil

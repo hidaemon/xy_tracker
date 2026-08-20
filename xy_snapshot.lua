@@ -89,6 +89,7 @@ function Snapshot:Validate(data)
 end
 
 function Snapshot:Send(target)
+    if addon.isLoggingOut then return false end
     if not self.available then
         addon:Print("新协议依赖库未加载，无法发送全量许愿表。")
         return false
@@ -117,6 +118,7 @@ function Snapshot:Send(target)
 end
 
 function Snapshot:ReceiveEncoded(data, sender)
+    if addon.isLoggingOut then return false end
     if not addon:IsAuthoritySender(sender) then return false end
     local decoded = self:Decode(data)
     local records, defaultDKP, running = self:Validate(decoded)
@@ -130,6 +132,7 @@ function Snapshot:ReceiveEncoded(data, sender)
     XyInProgress = running
     XyArray = records
     addon.records = XyArray
+    if addon.CompleteRelogRecovery then addon:CompleteRelogRecovery() end
     if addon.UI then addon.UI:Update() end
     return true
 end

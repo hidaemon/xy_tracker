@@ -64,6 +64,7 @@ addon.protocolNegotiating = false
 addon.protocolNewSeen = false
 addon.protocolElapsed = 0
 addon.lastRemoteResetToken = nil
+addon.isLoggingOut = false
 
 local function trim(value)
     if value == nil then return "" end
@@ -237,6 +238,12 @@ function addon:NormalizeDatabase()
     XyMinimapAngle = numeric(XyMinimapAngle, 0)
     DefaultDKP = numeric(DefaultDKP, 4)
     XyOnlyMode = numeric(XyOnlyMode, 1)
+    XyRelogPreserveWishes = numeric(XyRelogPreserveWishes, 0)
+    -- 小退后不能假定团队名单会立刻完整返回。恢复完成前保留备份中的成员，
+    -- 避免管理员把“只含本人/部分成员”的临时名单同步给全团。
+    self.relogRecovery = XyRelogPreserveWishes == 1 and
+        type(XyRelogWishBackup) == "table" and #XyRelogWishBackup > 0
+    self.relogExpectedCount = self.relogRecovery and #XyRelogWishBackup or 0
     self.rollRepeat = XyRollSettings.repeatRoll == 1
     self.rollChannelID = numeric(XyRollSettings.channelID, 2)
     self.protocolMode = "new"
@@ -289,6 +296,10 @@ function addon:NormalizeDatabase()
             end
         end
         snapshot.time = trim(snapshot.time)
+        local month, day, hour = string.match(snapshot.time, "^(%d%d?)-(%d%d?) (%d%d?)$")
+        if month and day and hour then
+            snapshot.time = string.format("%02d-%02d %02d:00", tonumber(month), tonumber(day), tonumber(hour))
+        end
         if snapshot.time ~= "" then
             snapshot.records = records
             snapshot.wishes = nil
@@ -379,7 +390,7 @@ end
 function addon:SaveResetSnapshot()
     XyResetHistory = XyResetHistory or {}
     local snapshot = {
-        time = date("%m-%d %H"),
+        time = date("%m-%d %H:%M"),
         records = {},
     }
     local i
@@ -409,6 +420,37 @@ function addon:ClearWishHistory()
     if self.UI then self.UI.historySelectedIndex = nil end
     if self.UI then self.UI:Update() end
     self:Print("历史许愿和重置记录已清空")
+end
+
+function addon:DeleteResetHistory(index)
+    index = tonumber(index)
+    if not index or not XyResetHistory or not XyResetHistory[index] then
+        return false
+    end
+
+    local deleted = XyResetHistory[index]
+    local deletedTime = deleted.time or ""
+    table.remove(XyResetHistory, index)
+
+    if self.UI then
+        local selected = self.UI.historySelectedIndex
+        if #XyResetHistory == 0 then
+            selected = nil
+        elseif selected == index then
+            if index > #XyResetHistory then
+                selected = #XyResetHistory
+            else
+                selected = index
+            end
+        elseif selected and selected > index then
+            selected = selected - 1
+        end
+        self.UI.historySelectedIndex = selected
+        self.UI:Update()
+    end
+
+    self:Print("已删除重置记录" .. (deletedTime ~= "" and ("：" .. deletedTime) or ""))
+    return true
 end
 
 function addon:RollCurrentWishes()
@@ -460,6 +502,7 @@ function addon:GetRollChatType()
 end
 
 function addon:RollAnnounce(text)
+    if self.isLoggingOut then return false end
     if not text or text == "" then return false end
     if not self:IsRollTeamAvailable() then return false end
     if type(sendChatMessage) ~= "function" then
@@ -478,7 +521,7 @@ function addon:RollAnnounce(text)
 end
 
 function addon:QueueRollAnnounce(text)
-    if text and text ~= "" then
+    if not self.isLoggingOut and text and text ~= "" then
         table.insert(self.rollMessageQueue, text)
     end
 end
@@ -691,6 +734,40 @@ function addon:IsAuthoritySender(sender)
     return false
 end
 
+-- 本地重置只允许当前插件管理员执行。团员端不因刷新、按钮或斜杠命令
+-- 改动许愿表；它们只能通过 ApplyRemoteReset 接受管理员的通讯指令。
+function addon:CanResetLocally()
+    if self:IsOperator() then return true end
+    self:Print("只有插件管理员可以重置许愿列表。")
+    return false
+end
+
+-- 新旧协议共用的远端重置入口。调用者必须已经确认 sender 是当前插件管理员。
+-- resetToken 仅新协议提供，用于抵御重复包；老协议传 nil，仍严格验证 sender。
+function addon:ApplyRemoteReset(defaultDKP, sender, resetToken)
+    if not sender or not self:IsAuthoritySender(sender) then return false end
+    if resetToken and resetToken ~= "" then
+        if resetToken == self.lastRemoteResetToken then return false end
+        self.lastRemoteResetToken = resetToken
+    end
+
+    self:SaveResetSnapshot()
+    self:CompleteRelogRecovery()
+    DefaultDKP = numeric(defaultDKP, DefaultDKP)
+    self:RefreshRoster(false)
+    local i
+    for i = 1, #XyArray do
+        XyArray[i].dkp = DefaultDKP
+        XyArray[i].xy = UNWISHED
+        XyArray[i].finish = 0
+    end
+    self.running = false
+    XyInProgress = false
+    self.records = XyArray
+    if self.UI then self.UI:Update() end
+    return true
+end
+
 function addon:RefreshAuthority()
     self.authorityName = self:GetAuthorityName()
     IsLeader = self:IsOperator()
@@ -736,21 +813,31 @@ function addon:RefreshRoster(preserve)
     local partyCount = 0
     if type(GetNumPartyMembers) == "function" then
         partyCount = tonumber(GetNumPartyMembers()) or 0
-    elseif type(GetNumSubgroupMembers) == "function" then
+    end
+    if partyCount == 0 and type(GetNumSubgroupMembers) == "function" then
         partyCount = tonumber(GetNumSubgroupMembers()) or 0
     end
     local inGroup = type(IsInGroup) == "function" and IsInGroup() or false
     if partyCount > 0 then inGroup = true end
+
+    -- 以游戏接口报告的正式人数判断名单是否完整；不要以旧备份人数为准，
+    -- 否则旧团本人数更多时会把不属于当前团队的玩家永久保留下来。
+    local authoritativeCount = 0
+    if inRaid then
+        authoritativeCount = raidCount
+        if authoritativeCount == 0 and type(GetNumGroupMembers) == "function" then
+            authoritativeCount = tonumber(GetNumGroupMembers()) or 0
+        end
+    elseif inGroup and partyCount > 0 then
+        authoritativeCount = partyCount + 1
+    end
 
     local player = UnitName("player")
     local playerClass = type(UnitClass) == "function" and select(1, UnitClass("player")) or nil
     addMember(player, playerClass)
 
     if inRaid then
-        local count = raidCount
-        if count == 0 and type(GetNumGroupMembers) == "function" then
-            count = tonumber(GetNumGroupMembers()) or 0
-        end
+        local count = authoritativeCount
         local limit = count > 0 and count or 40
         for i = 1, limit do
             local unit = "raid" .. i
@@ -791,6 +878,26 @@ function addon:RefreshRoster(preserve)
         for i = 1, #XyArray do table.insert(result, XyArray[i]) end
     end
 
+    -- 全团小退重登时，客户端可能先只报告本人或部分成员。恢复保护期间把
+    -- 暂未返回的旧记录留在表中，防止管理员抢先发送不完整的全量同步。
+    local reportedCount = #result
+    local finishRelogRecovery = false
+    if preserve and self.relogRecovery then
+        if authoritativeCount > 0 and reportedCount >= authoritativeCount then
+            -- 当前团队的正式人数和角色名均已读取，丢弃不属于本团的旧记录。
+            finishRelogRecovery = true
+        else
+            for i = 1, #XyArray do
+                local record = self:NormalizeRecord(XyArray[i])
+                local key = string.lower(shortName(record.name))
+                if record.name ~= "" and not added[key] then
+                    added[key] = true
+                    table.insert(result, record)
+                end
+            end
+        end
+    end
+
     local changed = #result ~= #XyArray
     if not changed then
         for i = 1, #result do
@@ -802,11 +909,13 @@ function addon:RefreshRoster(preserve)
     end
     XyArray = result
     self.records = XyArray
+    if finishRelogRecovery then self:CompleteRelogRecovery() end
     if self.UI then self.UI:Update() end
     return changed
 end
 
 function addon:ClearLocalWishes()
+    if not self:CanResetLocally() then return false end
     local i
     for i = 1, #XyArray do
         local record = self:NormalizeRecord(XyArray[i])
@@ -815,6 +924,75 @@ function addon:ClearLocalWishes()
         XyArray[i] = record
     end
     self.records = XyArray
+    return true
+end
+
+function addon:CaptureRelogWishBackup()
+    local backup = {}
+    local i
+    for i = 1, #XyArray do
+        local record = self:NormalizeRecord(XyArray[i])
+        backup[i] = {
+            name = record.name,
+            class = record.class,
+            xy = record.xy,
+            dkp = record.dkp,
+            finish = record.finish,
+        }
+    end
+    XyRelogWishBackup = backup
+end
+
+function addon:RestoreRelogWishBackup()
+    local backup = XyRelogWishBackup
+    if not self.relogRecovery or type(backup) ~= "table" or #backup == 0 then return 0 end
+
+    local byName = {}
+    local existing = {}
+    local i
+    for i = 1, #backup do
+        local record = self:NormalizeRecord(backup[i])
+        if record.name ~= "" then
+            byName[string.lower(shortName(record.name))] = record
+        end
+    end
+
+    local restored = 0
+    for i = 1, #XyArray do
+        local current = self:NormalizeRecord(XyArray[i])
+        local key = string.lower(shortName(current.name))
+        local saved = byName[key]
+        existing[key] = true
+        if saved and current.xy == UNWISHED and saved.xy ~= UNWISHED then
+            current.xy = saved.xy
+            current.dkp = saved.dkp
+            current.finish = saved.finish
+            XyArray[i] = current
+            restored = restored + 1
+        end
+    end
+
+    -- 若登录初期本地表为空或仅有部分成员，先补回备份记录。完整团队名单
+    -- 或 Chomp 全量快照到达后才会结束恢复保护，不能在 PLAYER_LOGIN 时删除备份。
+    for i = 1, #backup do
+        local saved = self:NormalizeRecord(backup[i])
+        local key = string.lower(shortName(saved.name))
+        if saved.name ~= "" and not existing[key] then
+            table.insert(XyArray, saved)
+            existing[key] = true
+            restored = restored + 1
+        end
+    end
+    self.records = XyArray
+    if restored > 0 and self.UI then self.UI:Update() end
+    return restored
+end
+
+function addon:CompleteRelogRecovery()
+    self.relogRecovery = false
+    self.relogExpectedCount = 0
+    XyRelogPreserveWishes = 0
+    XyRelogWishBackup = nil
 end
 
 function addon:SetProtocolMode(mode)
@@ -870,6 +1048,7 @@ function addon:UpdateProtocolNegotiation(elapsed)
 end
 
 function addon:QueueAddonMessage(prefix, message, channel, target)
+    if self.isLoggingOut then return false end
     if not message then
         return false
     end
@@ -944,6 +1123,7 @@ function addon:BroadcastRecord(record)
 end
 
 function addon:ProcessPacket(message, sender)
+    if self.isLoggingOut then return end
     local fields = splitPacket(message or "")
     local command = fields[1]
     if command == "CAPS_REQ" then
@@ -993,9 +1173,7 @@ function addon:ProcessPacket(message, sender)
 
     if command == "RESET" then
         local resetToken = fields[2] or ""
-        if resetToken ~= "" and resetToken == self.lastRemoteResetToken then return end
-        self.lastRemoteResetToken = resetToken
-        self:SaveResetSnapshot()
+        self:ApplyRemoteReset(fields[3], sender, resetToken)
     elseif command == "STATE" then
         self.running = numeric(fields[2], 0) == 1
         XyInProgress = self.running
@@ -1051,16 +1229,19 @@ function addon:ProcessPacket(message, sender)
 end
 
 function addon:RequestSnapshot()
+    if self.isLoggingOut then return false end
     if self.protocolMode == "legacy" and self.Legacy then
         return self.Legacy:RequestSnapshot()
     end
     local authority = self:GetAuthorityName()
     if authority and not sameName(authority, playerName()) then
-        self:QueuePacket(packet("HELLO", 1), "RAID")
+        return self:QueuePacket(packet("HELLO", 1), "RAID")
     end
+    return false
 end
 
 function addon:SendTeam(message)
+    if self.isLoggingOut then return false end
     if type(sendChatMessage) ~= "function" then return false end
     local channel = teamChannel()
     if not channel then
@@ -1105,12 +1286,25 @@ function addon:NotifyTradeDKP(name, amount, record, items)
     self:SendTeam(text)
 end
 
+-- 所有扣分入口都必须经过这里，避免主表、交易窗口或后续功能写出负分。
+function addon:CanDeductDKP(name, amount, record)
+    amount = math.abs(numeric(amount, 0))
+    record = record or self:FindRecord(name)
+    if not record then return false end
+    local remaining = numeric(record.dkp, DefaultDKP)
+    if amount == 0 or remaining >= amount then return true end
+    self:Print("DKP 不足：玩家【" .. record.name .. "】当前仅有【" .. remaining ..
+        "】分，无法扣除【" .. amount .. "】分；DKP 不得为负分。")
+    return false
+end
+
 function addon:SetDKP(name, amount, silent)
     if not self:IsOperator() then return false end
     amount = numeric(amount, 0)
     if amount == 0 then return false end
     local record = self:FindRecord(name)
     if not record then return false end
+    if amount < 0 and not self:CanDeductDKP(record.name, -amount, record) then return false end
     record.dkp = numeric(record.dkp, DefaultDKP) + amount
     self:BroadcastRecord(record)
     if self.UI then self.UI:Update() end
@@ -1174,9 +1368,13 @@ function addon:SetDefaultDKP(value)
 end
 
 function addon:ResetRoster()
-    if not self:IsOperator() then return false end
+    if not self:CanResetLocally() then return false end
     self:SaveResetSnapshot()
-    local resetToken = date("%Y%m%d%H%M%S")
+    self:CompleteRelogRecovery()
+    self.localResetSerial = (self.localResetSerial or 0) + 1
+    local resetToken = date("%Y%m%d%H%M%S") .. "-" .. self.localResetSerial
+    -- 即使客户端回显自己发出的 RESET 包，也不再次执行远端重置。
+    self.lastRemoteResetToken = resetToken
     self:RefreshRoster(false)
     local i
     for i = 1, #XyArray do
@@ -1331,12 +1529,37 @@ end
 function addon:Refresh()
     local inTeam = teamChannel() ~= nil
     local joinedTeam = inTeam and not self.wasInTeam
-    if joinedTeam then self:ClearLocalWishes() end
+    -- 刷新团队名单从不重置许愿内容。只有管理员的 ResetRoster 或经验证的
+    -- RESET 协议可以清空许愿表，避免全团小退时的名单延迟造成数据丢失。
     self.wasInTeam = inTeam
     local changed = self:RefreshRoster(true)
     if self:IsOperator() and (changed or joinedTeam) then self:SendSnapshot() end
     self:RefreshAuthority()
     if self.UI then self.UI:Update() end
+end
+
+-- 手动刷新时，团员不能用本地名单“猜测”团队数据；必须向当前插件管理员
+-- 请求 Chomp 全量快照，由管理员的许愿表统一修正人数、DKP 和许愿内容。
+function addon:RefreshFromAuthority()
+    self:Refresh()
+    if self.protocolMode == "legacy" then
+        -- 老协议没有“请求→完整快照”能力；只能用客户端当前团队名单
+        -- 核实并刷新人物行，绝不把本地结果当作新的许愿同步广播。
+        self:Print("老协议：已按当前团队名单刷新许愿列表人物。")
+        return true
+    end
+    if self:IsOperator() then
+        if teamChannel() then return self:SendSnapshot() end
+        return false
+    end
+
+    local requested = self:RequestSnapshot()
+    if requested then
+        self:Print("已向插件管理员请求刷新许愿列表。")
+    elseif self.protocolMode ~= "legacy" then
+        self:Print("未识别到插件管理员，暂时无法请求刷新。")
+    end
+    return requested
 end
 
 -- 旧版本公开函数兼容层：保留常用宏和外部模块调用方式，内部统一走新实现。
@@ -1386,12 +1609,13 @@ end
 function addon:OnStartButtonClick() return self:StartWish() end
 function addon:OnStopButtonClick() return self:StopWish() end
 function addon:OnClearButtonClick() return self:ResetRoster() end
-function addon:OnRefreshButtonClick() return self:Refresh() end
+function addon:OnRefreshButtonClick() return self:RefreshFromAuthority() end
 function addon:OnAnnounceButtonClick() return self:AnnounceMissing() end
 function addon:OnExportButtonClick() if self.UI then return self.UI:ShowExport() end end
 function addon:OnAboutButtonClick() if self.UI then return self.UI:ToggleAbout() end end
 
 function addon:OnUpdate(elapsed)
+    if self.isLoggingOut then return end
     self.txElapsed = self.txElapsed + elapsed
     if self.txElapsed >= QUEUE_DELAY and #self.txQueue > 0 then
         self.txElapsed = 0
@@ -1403,6 +1627,28 @@ function addon:OnUpdate(elapsed)
     self:UpdateProtocolNegotiation(elapsed)
     self:ProcessRollMessageQueue(elapsed)
     self:UpdateRollCountdown(elapsed)
+end
+
+function addon:BeginLogout()
+    if self.isLoggingOut then return end
+    self.isLoggingOut = true
+    -- 小退/切换人物绝不清空许愿列表；先保存当前记录，用于重登时兜底恢复。
+    self:CaptureRelogWishBackup()
+    XyRelogPreserveWishes = 1
+
+    -- 取消插件自己的待发消息和 Roll 通报，避免退出过程中继续调用受保护 API。
+    self.txQueue = {}
+    self.rollMessageQueue = {}
+    self.rollTracking = false
+    self.rollCountingDown = false
+    self.rollFinalDelay = 0
+    self.rollFinalText = nil
+    self.protocolNegotiating = false
+    self.receivingSession = nil
+
+    if self.eventFrame then
+        self.eventFrame:SetScript("OnUpdate", nil)
+    end
 end
 
 function addon:Initialize()
@@ -1428,6 +1674,7 @@ function addon:Initialize()
     self.eventFrame = eventFrame
     registerEventSafe(eventFrame, "PLAYER_LOGIN")
     registerEventSafe(eventFrame, "PLAYER_ENTERING_WORLD")
+    registerEventSafe(eventFrame, "PLAYER_LOGOUT")
     registerEventSafe(eventFrame, "RAID_ROSTER_UPDATE")
     registerEventSafe(eventFrame, "GROUP_ROSTER_UPDATE")
     registerEventSafe(eventFrame, "PARTY_LEADER_CHANGED")
@@ -1439,7 +1686,11 @@ function addon:Initialize()
     registerEventSafe(eventFrame, "CHAT_MSG_ADDON")
     eventFrame:SetScript("OnUpdate", function(_, elapsed) self:OnUpdate(elapsed) end)
     eventFrame:SetScript("OnEvent", function(_, event, ...)
-        if event == "CHAT_MSG_ADDON" then
+        if event == "PLAYER_LOGOUT" then
+            self:BeginLogout()
+        elseif self.isLoggingOut then
+            return
+        elseif event == "CHAT_MSG_ADDON" then
             local prefix, message, channel, sender = ...
             if self.Legacy and self.Legacy:IsPrefix(prefix) then
                 self.Legacy:Process(prefix, message, sender)
@@ -1455,7 +1706,12 @@ function addon:Initialize()
                event == "PARTY_LEADER_CHANGED" then
             self:StopRollWhenSolo()
             self:Refresh()
-        elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
+        elseif event == "PLAYER_LOGIN" then
+            self:RestoreRelogWishBackup()
+            self:Refresh()
+            self:BeginProtocolNegotiation()
+        elseif event == "PLAYER_ENTERING_WORLD" then
+            self:RestoreRelogWishBackup()
             self:Refresh()
             self:BeginProtocolNegotiation()
         end
@@ -1482,7 +1738,7 @@ function addon:RegisterSlashCommands()
         elseif command == "reset" then
             self:ResetRoster()
         elseif command == "refresh" then
-            self:Refresh()
+            self:RefreshFromAuthority()
         elseif command == "announce" then
             self:AnnounceMissing()
         elseif command == "export" then
@@ -1552,7 +1808,7 @@ function addon:AnnounceItemWishers(itemText, itemLink)
         end
     end
     if #matches == 0 then
-        self:Print("装备【" .. itemName .. "】没有团员许愿。")
+        self:SendTeam("通知：装备【" .. itemName .. "】没有团员许愿。")
         return false
     end
 

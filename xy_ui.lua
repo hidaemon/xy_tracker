@@ -279,7 +279,7 @@ function UI:CreateControlButtons(parent)
 
     local refresh = makeButton("XyTrackerFrameRefresh", parent, "刷新", 59, 17)
     refresh:SetPoint("TOP", parent, "TOP", 0, -38)
-    refresh:SetScript("OnClick", function() addon:Refresh() end)
+    refresh:SetScript("OnClick", function() addon:RefreshFromAuthority() end)
     self.controlButtons.Refresh = refresh
     self:RegisterWishElement(refresh)
 
@@ -686,6 +686,11 @@ function UI:CreateHistoryPage(parent)
     resetTitle:SetText("重置日期")
     resetTitle:SetTextColor(1, 1, 1)
 
+    local delete = makeButton("XyHistoryDeleteButton", page, "删除记录", 64, 20)
+    delete:SetPoint("TOPLEFT", page, "TOPLEFT", HISTORY_LEFT_WIDTH - 68, -42)
+    delete:SetScript("OnClick", function() self:DeleteSelectedResetHistory() end)
+    self.historyDeleteButton = delete
+
     local resetScroll = CreateFrame("ScrollFrame", "XyResetHistoryScrollFrame", page, "UIPanelScrollFrameTemplate")
     resetScroll:SetPoint("TOPLEFT", page, "TOPLEFT", 8, -66)
     resetScroll:SetPoint("BOTTOMRIGHT", page, "BOTTOMLEFT", 8 + HISTORY_LEFT_WIDTH, 34)
@@ -728,7 +733,7 @@ function UI:CreateHistoryPage(parent)
 
     local headers = {
         {"角色名", 100, 17}, {"职业", 70, 122},
-        {"许愿内容", 180, 197}, {"状态", 60, 382},
+        {"许愿内容", 130, 197}, {"DKP", 40, 332}, {"状态", 60, 377},
     }
     for i = 1, #headers do
         local label = makeLabel(page, nil, headers[i][2], 24)
@@ -761,19 +766,24 @@ function UI:CreateHistoryPage(parent)
         name:SetPoint("LEFT", row, "LEFT", 4, 0)
         local class = makeLabel(row, nil, 70, 20)
         class:SetPoint("LEFT", name, "RIGHT", 5, 0)
-        local wish = makeLabel(row, nil, 180, 20)
+        local wish = makeLabel(row, nil, 130, 20)
         wish:SetPoint("LEFT", class, "RIGHT", 5, 0)
+        local dkp = makeLabel(row, nil, 40, 20)
+        dkp:SetPoint("LEFT", wish, "RIGHT", 5, 0)
+        dkp:SetJustifyH("CENTER")
         local state = makeLabel(row, nil, 60, 20)
-        state:SetPoint("LEFT", wish, "RIGHT", 5, 0)
+        state:SetPoint("LEFT", dkp, "RIGHT", 5, 0)
         name:SetFont("Fonts\\ARKai_T.ttf", 14, "OUTLINE")
         class:SetFont("Fonts\\ARKai_T.ttf", 14, "OUTLINE")
         wish:SetFont("Fonts\\ARKai_T.ttf", 14, "OUTLINE")
+        dkp:SetFont("Fonts\\ARKai_T.ttf", 14, "OUTLINE")
         state:SetFont("Fonts\\ARKai_T.ttf", 12, "OUTLINE")
         name:SetTextColor(1, 0.82, 0)
         wish:SetTextColor(0.71, 0.28, 0.96)
         row.nameText = name
         row.classText = class
         row.wishText = wish
+        row.dkpText = dkp
         row.stateText = state
         row:Hide()
         self.historyRows[i] = row
@@ -831,6 +841,16 @@ function UI:SelectResetHistory(index)
     self:UpdateHistoryPage()
 end
 
+function UI:DeleteSelectedResetHistory()
+    local index = self.historySelectedIndex
+    if not index or not XyResetHistory or not XyResetHistory[index] then
+        addon:Print("请先选择要删除的重置日期。")
+        return
+    end
+    self.historyPendingDeleteIndex = index
+    self:ShowHistoryDeleteConfirm()
+end
+
 function UI:UpdateHistoryPage()
     if not self.historyPage then return end
     local resetHistory = XyResetHistory or {}
@@ -842,6 +862,11 @@ function UI:UpdateHistoryPage()
         end
     else
         self.historySelectedIndex = nil
+    end
+
+    if self.historyDeleteButton then
+        self.historyDeleteButton:SetEnabled(self.historySelectedIndex ~= nil and
+            resetHistory[self.historySelectedIndex] ~= nil)
     end
 
     self.resetHistoryScrollChild:SetHeight(math.max(#resetHistory, 1) * ROW_HEIGHT)
@@ -887,6 +912,7 @@ function UI:UpdateHistoryPage()
             local r, g, b = colorFromString(addon:ClassColor(class))
             row.classText:SetTextColor(r, g, b)
             row.wishText:SetText(data.xy or addon.unwished)
+            row.dkpText:SetText(tonumber(data.dkp) or tonumber(DefaultDKP) or 4)
             row.stateText:SetText(data.finish == 1 and "已达成" or "未达成")
             row.stateText:SetTextColor(data.finish == 1 and 0.30 or 0.75, data.finish == 1 and 1 or 0.75, 0.30)
         else
@@ -896,7 +922,59 @@ function UI:UpdateHistoryPage()
     if #history == 0 then self.historyEmpty:Show() else self.historyEmpty:Hide() end
 end
 
+function UI:CreateHistoryDeleteConfirm()
+    if self.historyDeleteConfirmFrame then return end
+
+    local frame = makePanel("XyHistoryDeleteConfirmFrame", UIParent, 340, 140)
+    frame:SetPoint("CENTER")
+    frame:SetFrameStrata("DIALOG")
+    frame:SetClampedToScreen(true)
+    makeMovable(frame)
+    frame:Hide()
+
+    local title = makeLabel(frame, nil, 280, 24)
+    title:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -14)
+    title:SetText("删除历史记录")
+    title:SetTextColor(1, 0.82, 0)
+
+    local message = makeLabel(frame, nil, 300, 36)
+    message:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -46)
+    message:SetText("确定删除当前选中的重置许愿记录吗？此操作不可恢复。")
+    message:SetTextColor(1, 1, 1)
+    message:SetJustifyV("TOP")
+
+    local deleteHistory = function()
+        local index = self.historyPendingDeleteIndex
+        self.historyPendingDeleteIndex = nil
+        frame:Hide()
+        addon:DeleteResetHistory(index)
+    end
+    local delete = makeButton("XyHistoryDeleteConfirmAccept", frame, "删除", 82, 24)
+    delete:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 52, 16)
+    delete:SetScript("OnClick", deleteHistory)
+
+    local cancelHistory = function()
+        self.historyPendingDeleteIndex = nil
+        frame:Hide()
+    end
+    local cancel = makeButton("XyHistoryDeleteConfirmCancel", frame, "取消", 82, 24)
+    cancel:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -52, 16)
+    cancel:SetScript("OnClick", cancelHistory)
+
+    local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
+    close:SetScript("OnClick", cancelHistory)
+
+    self.historyDeleteConfirmFrame = frame
+end
+
+function UI:ShowHistoryDeleteConfirm()
+    if not self.historyDeleteConfirmFrame then self:CreateHistoryDeleteConfirm() end
+    if self.historyDeleteConfirmFrame then self.historyDeleteConfirmFrame:Show() end
+end
+
 function UI:CreatePopups()
+    self:CreateHistoryDeleteConfirm()
     self:CreateDKPPopup("add", "XyAddDkpFrame", "增加 DKP")
     self:CreateDKPPopup("minus", "XyMinusDkpFrame", "扣除 DKP")
 
@@ -1028,8 +1106,13 @@ function UI:CreateDKPPopup(mode, name, titleText)
     ok:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 16, 14)
     local submit = function()
         local amount = edit:GetNumber()
-        if mode == "add" then addon:AddDKP(frame.memberName, amount) else addon:MinusDKP(frame.memberName, amount) end
-        frame:Hide()
+        local success
+        if mode == "add" then
+            success = addon:AddDKP(frame.memberName, amount)
+        else
+            success = addon:MinusDKP(frame.memberName, amount)
+        end
+        if success then frame:Hide() end
     end
     ok:SetScript("OnClick", submit)
     edit:SetScript("OnEnterPressed", submit)
