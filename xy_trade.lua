@@ -136,15 +136,16 @@ local function commitAction()
     local record = addon:FindRecord(action.player)
     if not record then return end
 
-    local success = true
+    local dkpSuccess = true
     if action.amount and action.amount > 0 then
-        success = addon:MinusDKP(record.name, action.amount, true)
-        if success then
+        dkpSuccess = addon:MinusDKP(record.name, action.amount, true)
+        if dkpSuccess then
             saveDkpTrade(action)
             addon:NotifyTradeDKP(record.name, action.amount, record, action.items)
         end
     end
-    if success and action.finish then
+    -- 许愿达成与扣分是独立选择；扣分不足时仍可记录已达成。
+    if action.finish then
         addon:MarkFinished(record.name, 1)
     end
     updateInfo()
@@ -242,6 +243,7 @@ local function createButtons()
                 return
             end
             if config.action == "minus" then
+                if not addon:CanDeductDKP(record.name, config.amount, record) then return end
                 selectedAmount = config.amount
             elseif config.action == "finish" then
                 selectedFinish = not selectedFinish

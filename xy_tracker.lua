@@ -1286,12 +1286,25 @@ function addon:NotifyTradeDKP(name, amount, record, items)
     self:SendTeam(text)
 end
 
+-- 所有扣分入口都必须经过这里，避免主表、交易窗口或后续功能写出负分。
+function addon:CanDeductDKP(name, amount, record)
+    amount = math.abs(numeric(amount, 0))
+    record = record or self:FindRecord(name)
+    if not record then return false end
+    local remaining = numeric(record.dkp, DefaultDKP)
+    if amount == 0 or remaining >= amount then return true end
+    self:Print("DKP 不足：玩家【" .. record.name .. "】当前仅有【" .. remaining ..
+        "】分，无法扣除【" .. amount .. "】分；DKP 不得为负分。")
+    return false
+end
+
 function addon:SetDKP(name, amount, silent)
     if not self:IsOperator() then return false end
     amount = numeric(amount, 0)
     if amount == 0 then return false end
     local record = self:FindRecord(name)
     if not record then return false end
+    if amount < 0 and not self:CanDeductDKP(record.name, -amount, record) then return false end
     record.dkp = numeric(record.dkp, DefaultDKP) + amount
     self:BroadcastRecord(record)
     if self.UI then self.UI:Update() end

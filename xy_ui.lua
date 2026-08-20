@@ -1106,8 +1106,13 @@ function UI:CreateDKPPopup(mode, name, titleText)
     ok:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 16, 14)
     local submit = function()
         local amount = edit:GetNumber()
-        if mode == "add" then addon:AddDKP(frame.memberName, amount) else addon:MinusDKP(frame.memberName, amount) end
-        frame:Hide()
+        local success
+        if mode == "add" then
+            success = addon:AddDKP(frame.memberName, amount)
+        else
+            success = addon:MinusDKP(frame.memberName, amount)
+        end
+        if success then frame:Hide() end
     end
     ok:SetScript("OnClick", submit)
     edit:SetScript("OnEnterPressed", submit)
